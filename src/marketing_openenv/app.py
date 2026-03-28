@@ -26,7 +26,7 @@ def health() -> dict:
 
 
 @app.get("/baseline")
-def baseline(model: str = "gpt-4.1-mini", seed: int = 11) -> dict:
+def baseline(model: str = "mixtral-8x7b-32768", seed: int = 11) -> dict:
     results = run_baseline(model=model, seed=seed)
     avg = sum(item.score for item in results) / max(1, len(results))
     return {

@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List
 
-from openai import OpenAI
+from groq import Groq
 
 from .env import MarketingCampaignEnv
 from .models import Action
@@ -31,12 +31,10 @@ def _serialize_observation(obs) -> Dict:
     return obs.model_dump()
 
 
-def _model_action(client: OpenAI, model: str, observation: Dict, seed: int) -> Action:
+def _model_action(client: Groq, model: str, observation: Dict, seed: int) -> Action:
     completion = client.chat.completions.create(
         model=model,
         temperature=0,
-        seed=seed,
-        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -58,10 +56,14 @@ def _model_action(client: OpenAI, model: str, observation: Dict, seed: int) -> A
 
 
 def run_baseline(model: str, seed: int) -> List[TaskRunResult]:
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is not set.")
-
-    client = OpenAI()
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "GROQ_API_KEY is not set. Set it with:\n"
+            "  $env:GROQ_API_KEY = 'your_key_here'\n"
+            "Or create a .env file with GROQ_API_KEY=your_key_here"
+        )
+    client = Groq(api_key=api_key)
     results: List[TaskRunResult] = []
 
     for idx, task_id in enumerate(sorted(TASKS.keys())):
@@ -100,8 +102,8 @@ def run_baseline(model: str, seed: int) -> List[TaskRunResult]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run OpenAI baseline on all tasks.")
-    parser.add_argument("--model", default="gpt-4.1-mini", help="OpenAI model name")
+    parser = argparse.ArgumentParser(description="Run Groq baseline on all tasks.")
+    parser.add_argument("--model", default="mixtral-8x7b-32768", help="Groq model name (e.g. mixtral-8x7b-32768, llama2-70b-4096)")
     parser.add_argument("--seed", type=int, default=11, help="Random seed")
     parser.add_argument(
         "--out",

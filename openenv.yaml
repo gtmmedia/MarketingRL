@@ -1,0 +1,30 @@
+id: marketing-campaign-optimizer
+name: Marketing Campaign Optimizer OpenEnv
+description: |
+  A real-world advertising operations environment where an agent optimizes bids,
+  budgets, and creative variants across channels under budget and efficiency constraints.
+version: 1.0.0
+domain: marketing-operations
+tags:
+  - openenv
+  - reinforcement-learning
+  - ad-optimization
+entrypoint: marketing_openenv.env:MarketingCampaignEnv
+api:
+  reset: reset
+  step: step
+  state: state
+models:
+  observation: marketing_openenv.models:Observation
+  action: marketing_openenv.models:Action
+  reward: marketing_openenv.models:Reward
+tasks:
+  - id: easy_ctr_recovery
+    difficulty: easy
+    grader: marketing_openenv.graders:grade_episode
+  - id: medium_conversion_push
+    difficulty: medium
+    grader: marketing_openenv.graders:grade_episode
+  - id: hard_multi_segment_stability
+    difficulty: hard
+    grader: marketing_openenv.graders:grade_episode

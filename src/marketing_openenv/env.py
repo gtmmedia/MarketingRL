@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
@@ -131,7 +130,8 @@ class MarketingCampaignEnv:
         )
 
         self._state.step_index += 1
-        done = self._state.step_index >= self._state.max_steps
+        overspend_stop = self._state.total_spend >= (1.35 * self._state.total_budget)
+        done = self._state.step_index >= self._state.max_steps or overspend_stop
         self._state.done = done
 
         info: Dict = {
@@ -145,6 +145,11 @@ class MarketingCampaignEnv:
             reward_value += terminal_bonus
             info["grade"] = grade
             info["terminal_bonus"] = terminal_bonus
+            if overspend_stop:
+                reward_value -= 0.1
+                info["termination_reason"] = "overspend_guardrail"
+            else:
+                info["termination_reason"] = "max_steps"
 
         reward_value = float(np.clip(reward_value, -1.0, 1.0))
         self._state.reward_history.append(reward_value)

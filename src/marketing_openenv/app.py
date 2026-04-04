@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from dotenv import load_dotenv
 
 from .baseline import run_baseline
 from .env import MarketingCampaignEnv
+
+
+# Ensure local .env is loaded when the API server starts
+load_dotenv()
 
 app = FastAPI(title="Marketing OpenEnv", version="1.0.0")
 
@@ -26,7 +31,7 @@ def health() -> dict:
 
 
 @app.get("/baseline")
-def baseline(model: str = "mixtral-8x7b-32768", seed: int = 11) -> dict:
+def baseline(model: str = "heuristic", seed: int = 11) -> dict:
     results = run_baseline(model=model, seed=seed)
     avg = sum(item.score for item in results) / max(1, len(results))
     return {

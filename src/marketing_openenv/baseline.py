@@ -6,16 +6,27 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List
 
+from dotenv import load_dotenv
 from groq import Groq
 
+from .agent_policy import extract_json_object, heuristic_action
 from .env import MarketingCampaignEnv
 from .models import Action
-from .tasks import TASKS
+
+TASK_ORDER = [
+    "easy_ctr_recovery",
+    "medium_conversion_push",
+    "hard_multi_segment_stability",
+]
 
 SYSTEM_PROMPT = (
     "You are an ad operations agent. Return only valid JSON with one action for"
     " the current campaign state."
 )
+
+
+# Load environment variables from a local .env file if present.
+load_dotenv()
 
 
 @dataclass
@@ -31,7 +42,7 @@ def _serialize_observation(obs) -> Dict:
     return obs.model_dump()
 
 
-def _model_action(client: Groq, model: str, observation: Dict, seed: int) -> Action:
+def _model_action(client: Groq, model: str, observation: Dict) -> Action:
     completion = client.chat.completions.create(
         model=model,
         temperature=0,
@@ -51,22 +62,25 @@ def _model_action(client: Groq, model: str, observation: Dict, seed: int) -> Act
         ],
     )
     raw = completion.choices[0].message.content or "{}"
-    payload = json.loads(raw)
+    payload = extract_json_object(raw)
     return Action.model_validate(payload)
 
 
 def run_baseline(model: str, seed: int) -> List[TaskRunResult]:
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "GROQ_API_KEY is not set. Set it with:\n"
-            "  $env:GROQ_API_KEY = 'your_key_here'\n"
-            "Or create a .env file with GROQ_API_KEY=your_key_here"
-        )
-    client = Groq(api_key=api_key)
+    use_heuristic = model.lower() == "heuristic"
+    client = None
+    if not use_heuristic:
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY is not set. Set it with:\n"
+                "  $env:GROQ_API_KEY = 'your_key_here'\n"
+                "Or create a .env file with GROQ_API_KEY=your_key_here"
+            )
+        client = Groq(api_key=api_key)
     results: List[TaskRunResult] = []
 
-    for idx, task_id in enumerate(sorted(TASKS.keys())):
+    for idx, task_id in enumerate(TASK_ORDER):
         env = MarketingCampaignEnv(task_id=task_id, seed=seed + idx)
         obs = env.reset(task_id=task_id, seed=seed + idx)
 
@@ -78,9 +92,12 @@ def run_baseline(model: str, seed: int) -> List[TaskRunResult]:
         while not done:
             obs_json = _serialize_observation(obs)
             try:
-                action = _model_action(client, model, obs_json, seed + idx)
+                if use_heuristic:
+                    action = heuristic_action(obs_json)
+                else:
+                    action = _model_action(client, model, obs_json)
             except Exception:
-                action = Action(action_type="wait")
+                action = heuristic_action(obs_json)
 
             obs, reward, done, info = env.step(action)
             total_reward += reward.value
@@ -103,7 +120,11 @@ def run_baseline(model: str, seed: int) -> List[TaskRunResult]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Groq baseline on all tasks.")
-    parser.add_argument("--model", default="mixtral-8x7b-32768", help="Groq model name (e.g. mixtral-8x7b-32768, llama2-70b-4096)")
+    parser.add_argument(
+        "--model",
+        default="heuristic",
+        help="Groq model name (e.g. mixtral-8x7b-32768) or heuristic for offline baseline",
+    )
     parser.add_argument("--seed", type=int, default=11, help="Random seed")
     parser.add_argument(
         "--out",

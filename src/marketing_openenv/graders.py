@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Dict
 
 from .models import EpisodeState, TaskSpec
@@ -24,8 +25,8 @@ def _diversity_score(state: EpisodeState) -> float:
         return 0.0
     proportions = [s / total for s in spends]
     # Normalized entropy-like measure.
-    entropy = -sum(p * (0.0 if p <= 1e-9 else __import__("math").log(p)) for p in proportions)
-    max_entropy = __import__("math").log(len(proportions)) if len(proportions) > 1 else 1.0
+    entropy = -sum(p * (0.0 if p <= 1e-9 else math.log(p)) for p in proportions)
+    max_entropy = math.log(len(proportions)) if len(proportions) > 1 else 1.0
     return _clamp01(entropy / max_entropy)
 
 
@@ -56,6 +57,10 @@ def grade_episode(task: TaskSpec, state: EpisodeState) -> Dict[str, float]:
     roas_component = _clamp01(_safe_ratio(roas, task.target_roas))
     cpa_component = _clamp01(_safe_ratio(task.target_cpa, max(1e-9, cpa)))
 
+    fatigue_component = 0.0
+    diversity_component = 0.0
+    stability_component = 0.0
+
     if task.difficulty.value == "easy":
         score = 0.40 * ctr_component + 0.30 * budget_component + 0.30 * conv_component
     elif task.difficulty.value == "medium":
@@ -80,4 +85,12 @@ def grade_episode(task: TaskSpec, state: EpisodeState) -> Dict[str, float]:
         "roas": roas,
         "cpa": cpa,
         "conversions": float(state.total_conversions),
+        "component_ctr": ctr_component,
+        "component_budget": budget_component,
+        "component_conversions": conv_component,
+        "component_roas": roas_component,
+        "component_cpa": cpa_component,
+        "component_fatigue": fatigue_component,
+        "component_diversity": diversity_component,
+        "component_stability": stability_component,
     }

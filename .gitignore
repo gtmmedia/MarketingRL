@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
-.env.example
 .baseline_results.json
+.inference_results.json
+.env
+Miniconda3-latest-Windows-x86_64.exe

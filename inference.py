@@ -1,184 +1,144 @@
-from __future__ import annotations
-
-import argparse
-import json
+import asyncio
 import os
-from typing import Dict, List
+import textwrap
+from typing import List, Optional
 
-from dotenv import load_dotenv
 from openai import OpenAI
 
-from src.marketing_openenv.agent_policy import extract_json_object, heuristic_action
-from src.marketing_openenv.env import MarketingCampaignEnv
-from src.marketing_openenv.models import Action
+from my_env_v4 import MyEnvV4Action, MyEnvV4Env
+IMAGE_NAME = os.getenv("IMAGE_NAME") # If you are using docker image 
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
-TASK_ORDER = [
-    "easy_ctr_recovery",
-    "medium_conversion_push",
-    "hard_multi_segment_stability",
-]
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+TASK_NAME = os.getenv("MY_ENV_V4_TASK", "echo")
+BENCHMARK = os.getenv("MY_ENV_V4_BENCHMARK", "my_env_v4")
+MAX_STEPS = 8
+TEMPERATURE = 0.7
+MAX_TOKENS = 150
+SUCCESS_SCORE_THRESHOLD = 0.1  # normalized score in [0, 1]
+
+# Max possible reward: each token contributes 0.1, across all steps
+_MAX_REWARD_PER_STEP = MAX_TOKENS * 0.1
+MAX_TOTAL_REWARD = MAX_STEPS * _MAX_REWARD_PER_STEP
+
+SYSTEM_PROMPT = textwrap.dedent(
+    """
+    You are interacting with a simple echo environment.
+     Each turn you must send a message. The environment will echo it back.
+    Reward is proportional to message length: reward = len(message) * 0.1
+    Your goal is to maximize total reward by sending meaningful, substantive messages.
+    Reply with exactly one message string — no quotes, no prefixes, just the message text.
+    """
+).strip()
 
 
-def _log(tag: str, payload: Dict) -> None:
-    print(f"[{tag}] {json.dumps(payload, separators=(',', ':'), ensure_ascii=True)}")
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def _compact_observation(obs: Dict) -> Dict:
-    compact_channels = []
-    for ch in obs.get("channels", []):
-        compact_channels.append(
-            {
-                "channel": ch.get("channel"),
-                "active": ch.get("active"),
-                "budget": round(float(ch.get("budget", 0.0)), 4),
-                "bid": round(float(ch.get("bid", 0.0)), 4),
-                "fatigue": round(float(ch.get("fatigue", 0.0)), 4),
-                "ctr": round(float(ch.get("clicks", 0)) / max(1, float(ch.get("impressions", 0))), 5),
-                "cvr": round(float(ch.get("conversions", 0)) / max(1, float(ch.get("clicks", 0))), 5),
-                "conversions": int(ch.get("conversions", 0)),
-            }
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+
+
+def build_user_prompt(step: int, last_echoed: str, last_reward: float, history: List[str]) -> str:
+    history_block = "\n".join(history[-4:]) if history else "None"
+    return textwrap.dedent(
+        f"""
+        Step: {step}
+        Last echoed message: {last_echoed!r}
+        Last reward: {last_reward:.2f}
+        Previous steps:
+        {history_block}
+        Send your next message.
+        """
+    ).strip()
+
+
+def get_model_message(client: OpenAI, step: int, last_echoed: str, last_reward: float, history: List[str]) -> str:
+    user_prompt = build_user_prompt(step, last_echoed, last_reward, history)
+    try:
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+            stream=False,
         )
-    return {
-        "task_id": obs.get("task_id"),
-        "step_index": obs.get("step_index"),
-        "max_steps": obs.get("max_steps"),
-        "remaining_budget": obs.get("remaining_budget"),
-        "total_spend": obs.get("total_spend"),
-        "total_revenue": obs.get("total_revenue"),
-        "total_conversions": obs.get("total_conversions"),
-        "avg_ctr": obs.get("avg_ctr"),
-        "avg_cvr": obs.get("avg_cvr"),
-        "avg_cpa": obs.get("avg_cpa"),
-        "roas": obs.get("roas"),
-        "channels": compact_channels,
-    }
+        text = (completion.choices[0].message.content or "").strip()
+        return text if text else "hello"
+    except Exception as exc:
+        print(f"[DEBUG] Model request failed: {exc}", flush=True)
+        return "hello"
 
 
-def _llm_action(client: OpenAI, model_name: str, observation: Dict) -> Action:
-    completion = client.chat.completions.create(
-        model=model_name,
-        temperature=0,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an ad campaign optimization agent. Return exactly one JSON object "
-                    "that follows the Action schema."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "Observation JSON:\n"
-                    + json.dumps(_compact_observation(observation), separators=(",", ":"))
-                    + "\n\n"
-                    "Return valid JSON only with keys: action_type, channel, delta, from_channel, to_channel, amount."
-                ),
-            },
-        ],
-    )
-    raw = completion.choices[0].message.content or "{}"
-    payload = extract_json_object(raw)
-    return Action.model_validate(payload)
+async def main() -> None:
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
+    env = await MyEnvV4Env.from_docker_image(IMAGE_NAME)
 
-def _validate_required_env() -> Dict[str, str]:
-    required = ["API_BASE_URL", "MODEL_NAME", "HF_TOKEN"]
-    values = {key: os.getenv(key, "").strip() for key in required}
-    missing = [k for k, v in values.items() if not v]
-    if missing:
-        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
-    return values
+    history: List[str] = []
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
 
+    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
-def run(seed: int) -> Dict:
-    load_dotenv()
-    env_cfg = _validate_required_env()
+    try:
+        result = await env.reset() # OpenENV.reset()
+        last_echoed = result.observation.echoed_message
+        last_reward = 0.0
 
-    api_base_url = env_cfg["API_BASE_URL"]
-    model_name = env_cfg["MODEL_NAME"]
-    hf_token = env_cfg["HF_TOKEN"]
+        for step in range(1, MAX_STEPS + 1):
+            if result.done:
+                break
 
-    use_heuristic = model_name.lower() == "heuristic"
-    client = OpenAI(base_url=api_base_url, api_key=hf_token, timeout=20.0)
+            message = get_model_message(client, step, last_echoed, last_reward, history)
 
-    _log(
-        "START",
-        {
-            "api_base_url": api_base_url,
-            "model_name": model_name,
-            "seed": seed,
-            "tasks": TASK_ORDER,
-        },
-    )
+            result = await env.step(MyEnvV4Action(message=message))
+            obs = result.observation
 
-    task_results: List[Dict] = []
+            reward = result.reward or 0.0
+            done = result.done
+            error = None
 
-    for idx, task_id in enumerate(TASK_ORDER):
-        env = MarketingCampaignEnv(task_id=task_id, seed=seed + idx)
-        obs = env.reset(task_id=task_id, seed=seed + idx)
-        done = False
-        total_reward = 0.0
-        steps = 0
-        info: Dict = {}
+            rewards.append(reward)
+            steps_taken = step
+            last_echoed = obs.echoed_message
+            last_reward = reward
 
-        while not done:
-            obs_json = obs.model_dump()
-            try:
-                action = heuristic_action(obs_json) if use_heuristic else _llm_action(client, model_name, obs_json)
-            except Exception:
-                action = heuristic_action(obs_json)
+            log_step(step=step, action=message, reward=reward, done=done, error=error)
 
-            obs, reward, done, info = env.step(action)
-            steps += 1
-            total_reward += reward.value
+            history.append(f"Step {step}: {message!r} -> reward {reward:+.2f}")
 
-            reward_0_1 = max(0.0, min(1.0, (reward.value + 1.0) / 2.0))
-            _log(
-                "STEP",
-                {
-                    "task_id": task_id,
-                    "step": steps,
-                    "action_type": action.action_type,
-                    "reward_0_1": round(reward_0_1, 6),
-                    "done": done,
-                },
-            )
+            if done:
+                break
 
-        grade = info.get("grade", {})
-        score = float(grade.get("score", 0.0))
-        if score < 0.0 or score > 1.0:
-            raise RuntimeError(f"Grader score out of range for {task_id}: {score}")
+        score = sum(rewards) / MAX_TOTAL_REWARD if MAX_TOTAL_REWARD > 0 else 0.0
+        score = min(max(score, 0.0), 1.0)  # clamp to [0, 1]
+        success = score >= SUCCESS_SCORE_THRESHOLD
 
-        result = {
-            "task_id": task_id,
-            "score": round(score, 6),
-            "total_reward": round(total_reward, 6),
-            "steps": steps,
-            "termination_reason": info.get("termination_reason", "unknown"),
-        }
-        task_results.append(result)
-        _log("END", result)
-
-    avg_score = sum(t["score"] for t in task_results) / max(1, len(task_results))
-    summary = {
-        "avg_score": round(avg_score, 6),
-        "task_count": len(task_results),
-        "seed": seed,
-    }
-    _log("END", summary)
-    return {"summary": summary, "tasks": task_results}
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Submission inference runner")
-    parser.add_argument("--seed", type=int, default=11)
-    args = parser.parse_args()
-
-    output = run(seed=args.seed)
-    with open(".inference_results.json", "w", encoding="utf-8") as f:
-        json.dump(output, f, indent=2)
+    finally:
+        try:
+            await env.close()
+        except Exception as e:
+            print(f"[DEBUG] env.close() error (container cleanup): {e}", flush=True)
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

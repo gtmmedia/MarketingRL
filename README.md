@@ -118,13 +118,14 @@ This encourages stable, disciplined decision-making.
 
 ⚡ Quick Start
 Setup
+```bash
 python -m venv .venv
 source .venv/bin/activate     # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 export PYTHONPATH=src
+```
 Minimal Usage
-'''python
-
+```python
 from marketing_openenv.env import MarketingCampaignEnv
 from marketing_openenv.models import Action
 
@@ -140,7 +141,7 @@ action = Action(
 obs, reward, done, info = env.step(action)
 
 print(reward.value, done, info)
-'''
+```
 🧪 Inference Runner
 
 A root inference script is provided:

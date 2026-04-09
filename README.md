@@ -123,6 +123,8 @@ source .venv/bin/activate     # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 export PYTHONPATH=src
 Minimal Usage
+'''python
+
 from marketing_openenv.env import MarketingCampaignEnv
 from marketing_openenv.models import Action
 
@@ -138,6 +140,7 @@ action = Action(
 obs, reward, done, info = env.step(action)
 
 print(reward.value, done, info)
+'''
 🧪 Inference Runner
 
 A root inference script is provided:
